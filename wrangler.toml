@@ -1,0 +1,16 @@
+name = "cooking-assistant-worker"
+main = "workers/src/index.ts"
+compatibility_date = "2026-01-14"
+
+[vars]
+ENVIRONMENT = "local"
+
+[[kv_namespaces]]
+binding = "RECIPES_KV"
+id = "REPLACE_WITH_KV_ID"
+preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+
+[[r2_buckets]]
+binding = "COMMON_FOOD_IMAGES"
+bucket_name = "common-food-images"
+preview_bucket_name = "common-food-images-preview"

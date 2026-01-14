@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# Xcode
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+*.swp
+*.moved-aside
+*.xcscmblueprint
+*.xccheckout
+
+# Swift Package Manager
+.build/
+
+# Carthage
+Carthage/Build/
+
+# CocoaPods
+Pods/
+
+# Logs
+*.log
+
+# Node / Wrangler
+node_modules/
+.wrangler/
+.dev.vars
+.env
+
+# Misc
+.idea/
+.vscode/
