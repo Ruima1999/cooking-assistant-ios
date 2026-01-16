@@ -11,6 +11,9 @@
 		B3B3B3B3B3B3B3B3B3B3B3B3 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3A3A3A3A3A3A3A3A3A3A3A3 /* ContentView.swift */; };
 		B4B4B4B4B4B4B4B4B4B4B4B4 /* AuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4B4B4B4B4B4B4B4B4B4B4B4 /* AuthView.swift */; };
 		B5B5B5B5B5B5B5B5B5B5B5B5 /* AuthStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5B5B5B5B5B5B5B5B5B5B5B5 /* AuthStore.swift */; };
+		B6B6B6B6B6B6B6B6B6B6B6B6 /* VoiceCommandService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7B7B7B7B7B7B7B7B7B7B7B7 /* VoiceCommandService.swift */; };
+		B7B7B7B7B7B7B7B7B7B7B7B7 /* QAService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8B8B8B8B8B8B8B8B8B8B8B8 /* QAService.swift */; };
+		B8B8B8B8B8B8B8B8B8B8B8B8 /* AnswerSpeaker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9B9B9B9B9B9B9B9B9B9B9B9 /* AnswerSpeaker.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,6 +23,9 @@
 		A4A4A4A4A4A4A4A4A4A4A4A4 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A5B5B5B5B5B5B5B5B5B5B5B5 /* AuthStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthStore.swift; sourceTree = "<group>"; };
 		A6B6B6B6B6B6B6B6B6B6B6B6 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		A7B7B7B7B7B7B7B7B7B7B7B7 /* VoiceCommandService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandService.swift; sourceTree = "<group>"; };
+		A8B8B8B8B8B8B8B8B8B8B8B8 /* QAService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QAService.swift; sourceTree = "<group>"; };
+		A9B9B9B9B9B9B9B9B9B9B9B9 /* AnswerSpeaker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnswerSpeaker.swift; sourceTree = "<group>"; };
 		A5A5A5A5A5A5A5A5A5A5A5A5 /* CookingAssistant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = CookingAssistant.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -48,6 +54,9 @@
 				A2A2A2A2A2A2A2A2A2A2A2A2 /* CookingAssistantApp.swift */,
 				A5B5B5B5B5B5B5B5B5B5B5B5 /* AuthStore.swift */,
 				A4B4B4B4B4B4B4B4B4B4B4B4 /* AuthView.swift */,
+				A7B7B7B7B7B7B7B7B7B7B7B7 /* VoiceCommandService.swift */,
+				A8B8B8B8B8B8B8B8B8B8B8B8 /* QAService.swift */,
+				A9B9B9B9B9B9B9B9B9B9B9B9 /* AnswerSpeaker.swift */,
 				A3A3A3A3A3A3A3A3A3A3A3A3 /* ContentView.swift */,
 				A4A4A4A4A4A4A4A4A4A4A4A4 /* Info.plist */,
 				A6B6B6B6B6B6B6B6B6B6B6B6 /* Config.xcconfig */,
@@ -131,6 +140,9 @@
 			files = (
 				B4B4B4B4B4B4B4B4B4B4B4B4 /* AuthView.swift in Sources */,
 				B5B5B5B5B5B5B5B5B5B5B5B5 /* AuthStore.swift in Sources */,
+				B6B6B6B6B6B6B6B6B6B6B6B6 /* VoiceCommandService.swift in Sources */,
+				B7B7B7B7B7B7B7B7B7B7B7B7 /* QAService.swift in Sources */,
+				B8B8B8B8B8B8B8B8B8B8B8B8 /* AnswerSpeaker.swift in Sources */,
 				B2B2B2B2B2B2B2B2B2B2B2B2 /* CookingAssistantApp.swift in Sources */,
 				B3B3B3B3B3B3B3B3B3B3B3B3 /* ContentView.swift in Sources */,
 			);

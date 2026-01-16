@@ -1,7 +1,9 @@
 import Foundation
+import os
 
 @MainActor
 final class AuthStore: ObservableObject {
+    private let logger = Logger(subsystem: "com.example.CookingAssistant", category: "auth")
     @Published private(set) var session: SupabaseSession?
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
@@ -13,12 +15,14 @@ final class AuthStore: ObservableObject {
     }
 
     func signUp(email: String, password: String) async {
+        logger.info("Sign up requested for \(email, privacy: .private(mask: .hash))")
         await runAuthTask {
             self.session = try await self.authService.signUp(email: email, password: password)
         }
     }
 
     func signIn(email: String, password: String) async {
+        logger.info("Sign in requested for \(email, privacy: .private(mask: .hash))")
         await runAuthTask {
             self.session = try await self.authService.signIn(email: email, password: password)
         }
@@ -29,7 +33,9 @@ final class AuthStore: ObservableObject {
         isLoading = true
         do {
             try await operation()
+            logger.info("Auth task succeeded")
         } catch {
+            logger.error("Auth task failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = error.localizedDescription
         }
         isLoading = false
@@ -76,8 +82,8 @@ final class SupabaseAuthService {
     }
 
     private func requestAuth(path: String, body: [String: String]) async throws -> SupabaseSession {
-        guard anonKey != "SUPABASE_ANON_KEY" else {
-            throw AuthError.missingAnonKey
+        guard let baseURL, let anonKey else {
+            throw AuthError.missingSupabaseConfig
         }
 
         var request = URLRequest(url: baseURL.appending(path: path))
@@ -102,14 +108,14 @@ final class SupabaseAuthService {
 }
 
 enum AuthError: LocalizedError {
-    case missingAnonKey
+    case missingSupabaseConfig
     case invalidResponse
     case server(String)
 
     var errorDescription: String? {
         switch self {
-        case .missingAnonKey:
-            return "Missing Supabase anon key. Set AppConfig.supabaseAnonKey."
+        case .missingSupabaseConfig:
+            return "Missing Supabase config. Set SUPABASE_URL and SUPABASE_ANON_KEY."
         case .invalidResponse:
             return "Invalid response from Supabase."
         case .server(let message):

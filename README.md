@@ -39,7 +39,7 @@ Open `ios/CookingAssistant.xcodeproj` in Xcode to run the app.
    ```
 6. Install and launch the app (replace the path from step 4 if needed):
    ```sh
-   xcrun simctl install "iPhone 17 Pro" \
+   xcrun simctl install "iPhone 17 Pro" 
      /Users/mareal/Library/Developer/Xcode/DerivedData/CookingAssistant-ddirmplyjxpeozgblzdgjramdonx/Build/Products/Debug-iphonesimulator/CookingAssistant.app
    xcrun simctl launch "iPhone 17 Pro" com.example.CookingAssistant
    ```
@@ -49,6 +49,17 @@ Update `ios/CookingAssistant/Config.xcconfig`:
 ```
 SUPABASE_URL = https://YOUR-PROJECT.supabase.co
 SUPABASE_ANON_KEY = YOUR_SUPABASE_ANON_KEY
+AUTH_ENABLED = NO
+```
+
+### Auth Bypass (Feature Flag)
+- Set `AUTH_ENABLED = NO` in `ios/CookingAssistant/Config.xcconfig` to skip sign-in for local workflow demos.
+- Set `AUTH_ENABLED = YES` to re-enable authentication later.
+
+### Runtime Logs (Simulator)
+Filter logs for the app:
+```sh
+xcrun simctl spawn booted log stream --predicate 'subsystem == "com.example.CookingAssistant"' --level debug
 ```
 
 ## Cloudflare Worker (Wrangler)

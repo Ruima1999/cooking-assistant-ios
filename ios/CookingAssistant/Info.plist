@@ -39,5 +39,13 @@
     <string>$(SUPABASE_URL)</string>
     <key>SUPABASE_ANON_KEY</key>
     <string>$(SUPABASE_ANON_KEY)</string>
+    <key>AUTH_ENABLED</key>
+    <string>$(AUTH_ENABLED)</string>
+    <key>WORKER_BASE_URL</key>
+    <string>$(WORKER_BASE_URL)</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>We use the microphone to listen for hands-free cooking commands.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Speech recognition lets you control steps with your voice.</string>
 </dict>
 </plist>

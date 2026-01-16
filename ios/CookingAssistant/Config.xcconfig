@@ -1,2 +1,5 @@
 SUPABASE_URL = https://wsuxzfeqrmxhsmcmpjmw.supabase.co
 SUPABASE_ANON_KEY = SUPABASE_ANON_KEY_HERE
+AUTH_ENABLED = NO
+EMPTY =
+WORKER_BASE_URL = http:/${EMPTY}/127.0.0.1:8789
