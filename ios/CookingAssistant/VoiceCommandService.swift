@@ -28,9 +28,6 @@ final class VoiceCommandService: ObservableObject {
     private var sessionId: Int = 0
     private var ttsActive = false
     private let logger = Logger(subsystem: "com.example.CookingAssistant", category: "voice")
-    private var audioBufferCount = 0
-    private var lastAudioLogTime: TimeInterval = 0
-    private var lastResultLogTime: TimeInterval = 0
     private var lastSpeechTime: TimeInterval = 0
     private var lastNonEmptyTranscript = ""
     private var lastPartialTranscript = ""
@@ -88,82 +85,20 @@ final class VoiceCommandService: ObservableObject {
 
     func startListening() {
         if ttsActive {
-            debugLog(
-                hypothesisId: "K",
-                location: "VoiceCommandService.startListening",
-                message: "start_ignored_tts_active",
-                data: [:]
-            )
             return
         }
         if isUserPaused {
-            debugLog(
-                hypothesisId: "K",
-                location: "VoiceCommandService.startListening",
-                message: "start_ignored_user_paused",
-                data: [:]
-            )
             return
         }
         if isListening {
-            debugLog(
-                hypothesisId: "K",
-                location: "VoiceCommandService.startListening",
-                message: "start_ignored_already_listening",
-                data: ["isListening": isListening]
-            )
             return
         }
-        sessionStartTime = Date().timeIntervalSince1970
-        sessionId += 1
-        shouldStopOnFinal = false
-        stopReason = nil
-        lastSpeechTime = 0
-        lastNonEmptyTranscript = ""
-        lastNonCommandTime = 0
-        lastCommand = nil
-        lastCommandDetectedAt = 0
-        suppressCommands = false
-        isUserPaused = false
-        debugLog(
-            hypothesisId: "K",
-            location: "VoiceCommandService.startListening",
-            message: "reset_state_for_followup",
-            data: [
-                "shouldStopOnFinal": shouldStopOnFinal,
-                "lastSpeechTime": lastSpeechTime,
-                "lastNonEmptyTranscriptLength": lastNonEmptyTranscript.count,
-            ]
-        )
-        debugLog(
-            hypothesisId: "K",
-            location: "VoiceCommandService.startListening",
-            message: "start_attempt",
-            data: [
-                "isListening": isListening,
-                "audioEngineRunning": audioEngine.isRunning,
-                "hasRecognitionTask": recognitionTask != nil,
-                "hasRecognitionRequest": recognitionRequest != nil,
-                "shouldStopOnFinal": shouldStopOnFinal,
-            ]
-        )
+        resetSessionState()
         errorMessage = nil
-        debugLog(
-            hypothesisId: "E",
-            location: "VoiceCommandService.startListening",
-            message: "start_listening",
-            data: ["isListening": isListening]
-        )
 
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             Task { @MainActor in
                 guard let self else { return }
-                self.debugLog(
-                    hypothesisId: "E",
-                    location: "VoiceCommandService.startListening",
-                    message: "auth_status",
-                    data: ["status": String(describing: status)]
-                )
                 switch status {
                 case .authorized:
                     self.beginSession()
@@ -182,11 +117,7 @@ final class VoiceCommandService: ObservableObject {
 
     func stopListening(force: Bool = true, reason: String? = nil) {
         stopReason = reason
-        if reason == "user_pause" {
-            isUserPaused = true
-        } else {
-            isUserPaused = false
-        }
+        isUserPaused = (reason == "user_pause")
         if reason == "inactivity_timeout" {
             suppressCommands = true
         }
@@ -196,14 +127,7 @@ final class VoiceCommandService: ObservableObject {
         } else {
             shouldStopOnFinal = true
         }
-        recognitionRequest?.endAudio()
-        recognitionRequest = nil
-
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-        }
-
+        stopAudioEngine()
         isListening = false
         if force {
             shouldStopOnFinal = false
@@ -215,44 +139,8 @@ final class VoiceCommandService: ObservableObject {
             message: "stop_listening",
             data: ["force": force, "reason": reason ?? "unknown"]
         )
-        debugLog(
-            hypothesisId: "K",
-            location: "VoiceCommandService.stopListening",
-            message: "stop_state",
-            data: [
-                "audioEngineRunning": audioEngine.isRunning,
-                "hasRecognitionTask": recognitionTask != nil,
-                "hasRecognitionRequest": recognitionRequest != nil,
-                "shouldStopOnFinal": shouldStopOnFinal,
-            ]
-        )
 
-        if autoRestartEnabled, reason != "user_pause" {
-            debugLog(
-                hypothesisId: "L",
-                location: "VoiceCommandService.stopListening",
-                message: "auto_restart_requested",
-                data: ["reason": reason ?? "unknown"]
-            )
-            if let reason, autoRestartReasons.contains(reason) {
-                Task { @MainActor in
-                    if self.ttsActive || reason == "tts" {
-                        self.debugLog(
-                            hypothesisId: "L",
-                            location: "VoiceCommandService.stopListening",
-                            message: "auto_restart_suppressed_tts",
-                            data: ["reason": reason]
-                        )
-                        return
-                    }
-                    self.isRestarting = true
-                    if reason == "recognition_error" {
-                        try? await Task.sleep(nanoseconds: 300_000_000)
-                    }
-                    self.startListening()
-                }
-            }
-        }
+        autoRestartIfNeeded(reason: reason)
     }
 
     func clearDetectedCommand() {
@@ -277,74 +165,25 @@ final class VoiceCommandService: ObservableObject {
 
     private func beginSession() {
         do {
-            debugLog(
-                hypothesisId: "K",
-                location: "VoiceCommandService.beginSession",
-                message: "begin_session_enter",
-                data: [
-                    "audioEngineRunning": audioEngine.isRunning,
-                    "shouldStopOnFinal": shouldStopOnFinal,
-                ]
-            )
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: [.duckOthers, .allowBluetoothHFP])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            debugLog(
-                hypothesisId: "F",
-                location: "VoiceCommandService.beginSession",
-                message: "audio_session_active",
-                data: [
-                    "routeInputs": session.currentRoute.inputs.map { $0.portType.rawValue },
-                    "routeOutputs": session.currentRoute.outputs.map { $0.portType.rawValue },
-                ]
-            )
 
             recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
             recognitionRequest?.shouldReportPartialResults = true
 
             guard let recognitionRequest else {
                 errorMessage = "Unable to start speech request."
-                debugLog(
-                    hypothesisId: "F",
-                    location: "VoiceCommandService.beginSession",
-                    message: "missing_recognition_request",
-                    data: [:]
-                )
                 return
             }
 
             let inputNode = audioEngine.inputNode
             let recordingFormat = inputNode.outputFormat(forBus: 0)
-            debugLog(
-                hypothesisId: "F",
-                location: "VoiceCommandService.beginSession",
-                message: "input_format",
-                data: [
-                    "sampleRate": recordingFormat.sampleRate,
-                    "channels": recordingFormat.channelCount,
-                ]
-            )
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
                 guard let self else { return }
                 recognitionRequest.append(buffer)
-                audioBufferCount += 1
 
                 let now = Date().timeIntervalSince1970
-                if now - lastAudioLogTime > 1.0 {
-                    lastAudioLogTime = now
-                    let rms = Self.rmsAmplitude(buffer: buffer)
-                    debugLog(
-                        hypothesisId: "F",
-                        location: "VoiceCommandService.audioTap",
-                        message: "audio_buffer",
-                        data: [
-                            "frames": buffer.frameLength,
-                            "rms": rms,
-                            "buffersSeen": audioBufferCount,
-                        ]
-                    )
-                }
-
                 if lastSpeechTime > 0, now - lastSpeechTime >= inactivityTimeout {
                     Task { @MainActor in
                         let shouldSendQuery = self.lastNonCommandTime > self.lastCommandTime
@@ -369,14 +208,10 @@ final class VoiceCommandService: ObservableObject {
                             self.lastPartialTranscript = ""
                             self.handleTranscript(fallback, isFinal: true)
                         }
+                        self.lastCommand = nil
+                        self.lastCommandTime = 0
                         self.isRestarting = true
                         self.stopListening(force: false, reason: "inactivity_timeout")
-                        self.debugLog(
-                            hypothesisId: "H",
-                            location: "VoiceCommandService.audioTap",
-                            message: "restart_after_timeout",
-                            data: ["sentTranscript": shouldSendQuery && !self.lastNonEmptyTranscript.isEmpty]
-                        )
                     }
                 }
             }
@@ -386,288 +221,54 @@ final class VoiceCommandService: ObservableObject {
             isListening = true
             isRestarting = false
             logger.info("Voice listening started")
-            debugLog(
-                hypothesisId: "F",
-                location: "VoiceCommandService.beginSession",
-                message: "audio_engine_started",
-                data: ["isRunning": audioEngine.isRunning]
-            )
 
             let activeSessionId = self.sessionId
             recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
                 Task { @MainActor in
                     guard let self else { return }
                     guard activeSessionId == self.sessionId else {
-                        self.debugLog(
-                            hypothesisId: "D",
-                            location: "VoiceCommandService.recognitionTask",
-                            message: "stale_session_result",
-                            data: ["sessionId": activeSessionId, "current": self.sessionId]
-                        )
                         return
                     }
 
                     if let result {
-                        if self.ttsActive {
-                            self.debugLog(
-                                hypothesisId: "D",
-                                location: "VoiceCommandService.recognitionTask",
-                                message: "result_suppressed_tts",
-                                data: ["isFinal": result.isFinal]
-                            )
-                            return
-                        }
-                        if self.isUserPaused {
-                            self.debugLog(
-                                hypothesisId: "D",
-                                location: "VoiceCommandService.recognitionTask",
-                                message: "result_suppressed_user_paused",
-                                data: ["isFinal": result.isFinal]
-                            )
-                            return
-                        }
-                        let phrase = result.bestTranscription.formattedString
-                        self.transcript = phrase
-                        let now = Date().timeIntervalSince1970
-                        if !phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            self.lastPartialTranscript = phrase
-                            if Self.isLikelyCommand(phrase) {
-                                self.lastCommandTime = now
-                                self.debugLog(
-                                    hypothesisId: "S",
-                                    location: "VoiceCommandService.recognitionTask",
-                                    message: "command_like_transcript",
-                                    data: ["length": phrase.count]
-                                )
-                            } else {
-                                self.lastNonCommandTime = now
-                                self.lastSpeechTime = now
-                                self.lastNonEmptyTranscript = phrase
-                            }
-                            self.lastSpeechTime = now
-                        }
-                        if now - self.lastResultLogTime > 0.5 {
-                            self.lastResultLogTime = now
-                            self.debugLog(
-                                hypothesisId: "G",
-                                location: "VoiceCommandService.recognitionTask",
-                                message: "speech_result",
-                                data: [
-                                    "isFinal": result.isFinal,
-                                    "length": phrase.count,
-                                ]
-                            )
-                        }
-                        self.handleTranscript(phrase, isFinal: result.isFinal)
-
-                        if self.shouldStopOnFinal, result.isFinal {
-                            self.debugLog(
-                                hypothesisId: "I",
-                                location: "VoiceCommandService.recognitionTask",
-                                message: "final_received_stop",
-                                data: ["reason": self.stopReason ?? "inactivity_timeout"]
-                            )
-                            self.stopListening(force: true, reason: self.stopReason ?? "final")
-                        }
+                        self.handleRecognitionResult(result)
                     }
 
                     if let error {
-                        if self.ttsActive || self.stopReason == "tts" {
-                            self.debugLog(
-                                hypothesisId: "D",
-                                location: "VoiceCommandService.recognitionTask",
-                                message: "error_suppressed_tts",
-                                data: ["error": error.localizedDescription]
-                            )
-                            return
-                        }
-                        if self.isUserPaused || self.stopReason == "user_pause" {
-                            self.debugLog(
-                                hypothesisId: "D",
-                                location: "VoiceCommandService.recognitionTask",
-                                message: "error_suppressed_user_paused",
-                                data: ["error": error.localizedDescription]
-                            )
-                            return
-                        }
-                        self.debugLog(
-                            hypothesisId: "D",
-                            location: "VoiceCommandService.recognitionTask",
-                            message: "recognition_error",
-                            data: [
-                                "error": error.localizedDescription,
-                                "uptime": Date().timeIntervalSince1970 - self.sessionStartTime,
-                            ]
-                        )
-                        self.errorMessage = error.localizedDescription
-                        self.logger.error("Voice error: \(error.localizedDescription, privacy: .public)")
-                        self.stopListening(force: true, reason: "recognition_error")
+                        self.handleRecognitionError(error)
                     }
                 }
             }
-            debugLog(
-                hypothesisId: "F",
-                location: "VoiceCommandService.beginSession",
-                message: "recognition_task_started",
-                data: ["recognizerAvailable": speechRecognizer?.isAvailable ?? false]
-            )
         } catch {
             errorMessage = error.localizedDescription
             logger.error("Voice session error: \(error.localizedDescription, privacy: .public)")
-            debugLog(
-                hypothesisId: "F",
-                location: "VoiceCommandService.beginSession",
-                message: "begin_session_error",
-                data: ["error": error.localizedDescription]
-            )
             stopListening()
         }
     }
 
-    private static func rmsAmplitude(buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData?.pointee else {
-            return 0
-        }
-        let frameLength = Int(buffer.frameLength)
-        guard frameLength > 0 else { return 0 }
-        var sum: Float = 0
-        for i in 0..<frameLength {
-            let sample = channelData[i]
-            sum += sample * sample
-        }
-        return sqrt(sum / Float(frameLength))
-    }
-
     private func handleTranscript(_ transcript: String, isFinal: Bool) {
         if suppressCommands {
-            debugLog(
-                hypothesisId: "Q",
-                location: "VoiceCommandService.handleTranscript",
-                message: "suppressed_after_stop",
-                data: ["isFinal": isFinal, "length": transcript.count]
-            )
             if isFinal {
                 lastCommand = nil
             }
             return
         }
         let lowercased = transcript.lowercased()
-        let command: VoiceCommand?
         let isQuestion = isQuestionLike(lowercased)
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         let commandAllowed = Self.isLikelyCommand(transcript) && !isQuestion
-        debugLog(
-            hypothesisId: "Q",
-            location: "VoiceCommandService.handleTranscript",
-            message: "transcript_received",
-            data: [
-                "isFinal": isFinal,
-                "length": transcript.count,
-                "containsNext": lowercased.contains("next"),
-                "containsPrev": lowercased.contains("previous") || lowercased.contains("back"),
-                "containsRepeat": lowercased.contains("repeat"),
-            ]
-        )
-
-        if commandAllowed && lowercased.contains("next") {
-            command = .next
-        } else if commandAllowed && (lowercased.contains("previous") || lowercased.contains("back")) {
-            command = .previous
-        } else if commandAllowed && lowercased.contains("repeat") {
-            command = .repeatStep
-        } else {
-            command = nil
-        }
+        let command = commandAllowed ? Self.detectCommand(in: lowercased) : nil
 
         if let command {
-            let now = Date().timeIntervalSince1970
-            let isRepeat = command == lastCommand
-            let withinDebounce = now - lastCommandDetectedAt < commandDebounce
-            if isRepeat && withinDebounce {
-                debugLog(
-                    hypothesisId: "Q",
-                    location: "VoiceCommandService.handleTranscript",
-                    message: "command_suppressed_debounce",
-                    data: [
-                        "command": String(describing: command),
-                        "delta": now - lastCommandDetectedAt,
-                    ]
-                )
-            } else {
-            debugLog(
-                hypothesisId: "Q",
-                location: "VoiceCommandService.handleTranscript",
-                message: "command_detected",
-                data: [
-                    "command": String(describing: command),
-                    "isFinal": isFinal,
-                    "length": transcript.count,
-                ]
-            )
-            lastCommandTime = now
-            lastCommandDetectedAt = now
-            lastNonEmptyTranscript = ""
-            lastPartialTranscript = ""
-            lastNonCommandTime = 0
-            detectedCommand = command
-            lastCommand = command
-            logger.info("Detected voice command: \(String(describing: command), privacy: .public)")
-            debugLog(
-                hypothesisId: "R",
-                location: "VoiceCommandService.handleTranscript",
-                message: "command_applied",
-                data: [
-                    "command": String(describing: command),
-                    "clearedTranscript": true,
-                ]
-            )
-            }
+            handleCommand(command, isFinal: isFinal, transcript: transcript)
         }
 
         if isFinal {
-            debugLog(
-                hypothesisId: "B",
-                location: "VoiceCommandService.handleTranscript",
-                message: "final_transcript",
-                data: [
-                    "length": transcript.count,
-                    "isQuestion": isQuestion,
-                    "hasCommand": command != nil,
-                ]
-            )
-            logger.info("Final transcript: \(transcript, privacy: .private(mask: .hash))")
-            logger.info("Is question: \(isQuestion, privacy: .public)")
-            logger.info("Transcript (raw): \(transcript, privacy: .private)")
-
             if trimmed.isEmpty {
-                debugLog(
-                    hypothesisId: "B",
-                    location: "VoiceCommandService.handleTranscript",
-                    message: "skip_empty_transcript",
-                    data: [:]
-                )
                 return
             }
 
-            if command == nil {
-                debugLog(
-                    hypothesisId: "B",
-                    location: "VoiceCommandService.handleTranscript",
-                    message: "detected_query_no_command",
-                    data: ["length": transcript.count, "isQuestion": isQuestion]
-                )
-                detectedQuery = transcript
-                logger.info("Detected voice query for command = nil: \(transcript, privacy: .private(mask: .hash))")
-            } else if isQuestion {
-                debugLog(
-                    hypothesisId: "B",
-                    location: "VoiceCommandService.handleTranscript",
-                    message: "detected_query_question",
-                    data: ["length": transcript.count, "isQuestion": isQuestion]
-                )
-                detectedQuery = transcript
-                logger.info("Detected voice query (question) for isQuestion = true: \(transcript, privacy: .private(mask: .hash))")
-            }
+            handleQueryIfNeeded(command: command, isQuestion: isQuestion, transcript: transcript)
         }
 
         if isFinal {
@@ -677,12 +278,6 @@ final class VoiceCommandService: ObservableObject {
 
     func processLastPartialAfterTimeout() {
         let trimmed = lastPartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        debugLog(
-            hypothesisId: "T",
-            location: "VoiceCommandService.processLastPartialAfterTimeout",
-            message: "process_partial",
-            data: ["length": trimmed.count]
-        )
         guard !trimmed.isEmpty else { return }
         handleTranscript(trimmed, isFinal: true)
     }
@@ -719,14 +314,6 @@ final class VoiceCommandService: ObservableObject {
         return containsCues.contains { trimmed.contains($0) }
     }
 
-    private static func containsCommandKeyword(_ transcript: String) -> Bool {
-        let lowercased = transcript.lowercased()
-        return lowercased.contains("next")
-            || lowercased.contains("previous")
-            || lowercased.contains("back")
-            || lowercased.contains("repeat")
-    }
-
     private static func isLikelyCommand(_ transcript: String) -> Bool {
         let lowercased = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if lowercased.isEmpty {
@@ -738,12 +325,149 @@ final class VoiceCommandService: ObservableObject {
         let allowedFiller = ["step", "please", "now", "the", "a", "an"]
         if commandWords.contains(first) {
             let rest = tokens.dropFirst()
-            return rest.allSatisfy { allowedFiller.contains($0) }
+            return rest.allSatisfy { allowedFiller.contains($0) || commandWords.contains($0) }
         }
         if tokens.count >= 2, tokens[0] == "go", commandWords.contains(tokens[1]) {
             let rest = tokens.dropFirst(2)
-            return rest.allSatisfy { allowedFiller.contains($0) }
+            return rest.allSatisfy { allowedFiller.contains($0) || commandWords.contains($0) }
         }
         return false
+    }
+
+    private static func lastRangeIndex(of needle: String, in haystack: String) -> Int {
+        guard let range = haystack.range(of: needle, options: [.caseInsensitive, .backwards]) else {
+            return -1
+        }
+        return haystack.distance(from: haystack.startIndex, to: range.lowerBound)
+    }
+
+    private static func detectCommand(in lowercased: String) -> VoiceCommand? {
+        let matches: [(VoiceCommand, Int)] = [
+            (.next, lastRangeIndex(of: "next", in: lowercased)),
+            (.previous, lastRangeIndex(of: "previous", in: lowercased)),
+            (.previous, lastRangeIndex(of: "back", in: lowercased)),
+            (.repeatStep, lastRangeIndex(of: "repeat", in: lowercased)),
+        ]
+        let best = matches.filter { $0.1 >= 0 }.max { $0.1 < $1.1 }
+        return best?.0
+    }
+
+    private func resetSessionState() {
+        sessionStartTime = Date().timeIntervalSince1970
+        sessionId += 1
+        shouldStopOnFinal = false
+        stopReason = nil
+        lastSpeechTime = 0
+        lastNonEmptyTranscript = ""
+        lastNonCommandTime = 0
+        lastCommand = nil
+        lastCommandDetectedAt = 0
+        suppressCommands = false
+        isUserPaused = false
+    }
+
+    private func stopAudioEngine() {
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        if audioEngine.isRunning {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+        }
+    }
+
+    private func autoRestartIfNeeded(reason: String?) {
+        guard autoRestartEnabled, reason != "user_pause" else { return }
+        guard let reason, autoRestartReasons.contains(reason) else { return }
+        guard !ttsActive, reason != "tts" else { return }
+        Task { @MainActor in
+            self.isRestarting = true
+            if reason == "recognition_error" {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            }
+            self.startListening()
+        }
+    }
+
+    private func handleRecognitionResult(_ result: SFSpeechRecognitionResult) {
+        if ttsActive || isUserPaused {
+            return
+        }
+        let phrase = result.bestTranscription.formattedString
+        transcript = phrase
+        updateLastSpeech(with: phrase)
+        handleTranscript(phrase, isFinal: result.isFinal)
+
+        if shouldStopOnFinal, result.isFinal {
+            stopListening(force: true, reason: stopReason ?? "final")
+        }
+    }
+
+    private func handleRecognitionError(_ error: Error) {
+        if ttsActive || stopReason == "tts" { return }
+        if isUserPaused || stopReason == "user_pause" { return }
+        debugLog(
+            hypothesisId: "D",
+            location: "VoiceCommandService.recognitionTask",
+            message: "recognition_error",
+            data: ["error": error.localizedDescription]
+        )
+        errorMessage = error.localizedDescription
+        logger.error("Voice error: \(error.localizedDescription, privacy: .public)")
+        stopListening(force: true, reason: "recognition_error")
+    }
+
+    private func updateLastSpeech(with phrase: String) {
+        let trimmed = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        lastPartialTranscript = phrase
+        if Self.isLikelyCommand(phrase) {
+            lastCommandTime = now
+        } else {
+            lastNonCommandTime = now
+            lastNonEmptyTranscript = phrase
+        }
+        lastSpeechTime = now
+    }
+
+    private func handleCommand(_ command: VoiceCommand, isFinal: Bool, transcript: String) {
+        let now = Date().timeIntervalSince1970
+        let isRepeat = command == lastCommand
+        let withinDebounce = now - lastCommandDetectedAt < commandDebounce
+        if isRepeat && withinDebounce {
+            debugLog(
+                hypothesisId: "Q",
+                location: "VoiceCommandService.handleTranscript",
+                message: "command_suppressed_debounce",
+                data: ["command": String(describing: command)]
+            )
+            return
+        }
+        debugLog(
+            hypothesisId: "Q",
+            location: "VoiceCommandService.handleTranscript",
+            message: "command_detected",
+            data: ["command": String(describing: command), "isFinal": isFinal, "length": transcript.count]
+        )
+        lastCommandTime = now
+        lastCommandDetectedAt = now
+        lastNonEmptyTranscript = ""
+        lastPartialTranscript = ""
+        lastNonCommandTime = 0
+        detectedCommand = command
+        lastCommand = command
+        logger.info("Detected voice command: \(String(describing: command), privacy: .public)")
+    }
+
+    private func handleQueryIfNeeded(command: VoiceCommand?, isQuestion: Bool, transcript: String) {
+        guard command == nil else { return }
+        guard isQuestion else { return }
+        debugLog(
+            hypothesisId: "B",
+            location: "VoiceCommandService.handleTranscript",
+            message: "query_detected",
+            data: ["length": transcript.count]
+        )
+        detectedQuery = transcript
     }
 }
