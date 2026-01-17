@@ -381,7 +381,7 @@ struct CookingModeView: View {
         if voiceService.isListening {
             voiceService.stopListening(force: true, reason: "user_pause")
         } else {
-            voiceService.startListening()
+            voiceService.resumeAfterUserPause()
         }
     }
 

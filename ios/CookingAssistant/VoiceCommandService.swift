@@ -96,6 +96,15 @@ final class VoiceCommandService: ObservableObject {
             )
             return
         }
+        if isUserPaused {
+            debugLog(
+                hypothesisId: "K",
+                location: "VoiceCommandService.startListening",
+                message: "start_ignored_user_paused",
+                data: [:]
+            )
+            return
+        }
         if isListening {
             debugLog(
                 hypothesisId: "K",
@@ -261,6 +270,11 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
+    func resumeAfterUserPause() {
+        isUserPaused = false
+        startListening()
+    }
+
     private func beginSession() {
         do {
             debugLog(
@@ -403,12 +417,21 @@ final class VoiceCommandService: ObservableObject {
                             )
                             return
                         }
+                        if self.isUserPaused {
+                            self.debugLog(
+                                hypothesisId: "D",
+                                location: "VoiceCommandService.recognitionTask",
+                                message: "result_suppressed_user_paused",
+                                data: ["isFinal": result.isFinal]
+                            )
+                            return
+                        }
                         let phrase = result.bestTranscription.formattedString
                         self.transcript = phrase
                         let now = Date().timeIntervalSince1970
                         if !phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             self.lastPartialTranscript = phrase
-                            if Self.containsCommandKeyword(phrase) {
+                            if Self.isLikelyCommand(phrase) {
                                 self.lastCommandTime = now
                                 self.debugLog(
                                     hypothesisId: "S",
@@ -454,6 +477,15 @@ final class VoiceCommandService: ObservableObject {
                                 hypothesisId: "D",
                                 location: "VoiceCommandService.recognitionTask",
                                 message: "error_suppressed_tts",
+                                data: ["error": error.localizedDescription]
+                            )
+                            return
+                        }
+                        if self.isUserPaused || self.stopReason == "user_pause" {
+                            self.debugLog(
+                                hypothesisId: "D",
+                                location: "VoiceCommandService.recognitionTask",
+                                message: "error_suppressed_user_paused",
                                 data: ["error": error.localizedDescription]
                             )
                             return
@@ -523,6 +555,7 @@ final class VoiceCommandService: ObservableObject {
         let command: VoiceCommand?
         let isQuestion = isQuestionLike(lowercased)
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commandAllowed = Self.isLikelyCommand(transcript) && !isQuestion
         debugLog(
             hypothesisId: "Q",
             location: "VoiceCommandService.handleTranscript",
@@ -536,11 +569,11 @@ final class VoiceCommandService: ObservableObject {
             ]
         )
 
-        if lowercased.contains("next") {
+        if commandAllowed && lowercased.contains("next") {
             command = .next
-        } else if lowercased.contains("previous") || lowercased.contains("back") {
+        } else if commandAllowed && (lowercased.contains("previous") || lowercased.contains("back")) {
             command = .previous
-        } else if lowercased.contains("repeat") {
+        } else if commandAllowed && lowercased.contains("repeat") {
             command = .repeatStep
         } else {
             command = nil
@@ -692,5 +725,25 @@ final class VoiceCommandService: ObservableObject {
             || lowercased.contains("previous")
             || lowercased.contains("back")
             || lowercased.contains("repeat")
+    }
+
+    private static func isLikelyCommand(_ transcript: String) -> Bool {
+        let lowercased = transcript.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lowercased.isEmpty {
+            return false
+        }
+        let tokens = lowercased.split(separator: " ").map(String.init)
+        let first = tokens.first ?? ""
+        let commandWords = ["next", "previous", "back", "repeat"]
+        let allowedFiller = ["step", "please", "now", "the", "a", "an"]
+        if commandWords.contains(first) {
+            let rest = tokens.dropFirst()
+            return rest.allSatisfy { allowedFiller.contains($0) }
+        }
+        if tokens.count >= 2, tokens[0] == "go", commandWords.contains(tokens[1]) {
+            let rest = tokens.dropFirst(2)
+            return rest.allSatisfy { allowedFiller.contains($0) }
+        }
+        return false
     }
 }
