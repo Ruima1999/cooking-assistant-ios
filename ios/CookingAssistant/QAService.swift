@@ -36,7 +36,16 @@ final class QAService {
             try? handle.close()
         } else {
             FileManager.default.createFile(atPath: debugLogPath, contents: json + Data("\n".utf8))
+            postDebug(json)
         }
+    }
+    
+    private func postDebug(_ json: Data) {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:7242/ingest/116df77c-a424-451d-a9cd-5b90048690e6")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = json
+        URLSession.shared.dataTask(with: request).resume()
     }
     // #endregion
 

@@ -107,7 +107,16 @@ struct AppConfig {
             try? handle.close()
         } else {
             FileManager.default.createFile(atPath: debugLogPath, contents: json + Data("\n".utf8))
+            postDebug(json)
         }
+    }
+    
+    private static func postDebug(_ json: Data) {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:7242/ingest/116df77c-a424-451d-a9cd-5b90048690e6")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = json
+        URLSession.shared.dataTask(with: request).resume()
     }
     // #endregion
 }
@@ -293,6 +302,12 @@ struct CookingModeView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             voiceService.startListening()
+            answerSpeaker.onSpeakStart = { [weak voiceService] in
+                voiceService?.stopListening(force: true, reason: "tts")
+            }
+            answerSpeaker.onSpeakFinish = { [weak voiceService] in
+                voiceService?.startListening()
+            }
         }
         .onDisappear {
             voiceService.stopListening()
@@ -358,7 +373,7 @@ struct CookingModeView: View {
 
     private func toggleListening() {
         if voiceService.isListening {
-            voiceService.stopListening()
+            voiceService.stopListening(force: true, reason: "user_pause")
         } else {
             voiceService.startListening()
         }

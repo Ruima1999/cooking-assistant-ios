@@ -30,6 +30,9 @@ final class VoiceCommandService: ObservableObject {
     private let inactivityTimeout: TimeInterval = 5
     private var shouldStopOnFinal = false
     private var stopReason: String?
+    private let autoRestartEnabled = true
+    private var sessionStartTime: TimeInterval = 0
+    private let autoRestartReasons: Set<String> = ["inactivity_timeout", "final"]
     // #region agent log
     private let debugLogPath = "/Users/mareal/cooking-assistant-ios/.cursor/debug.log"
 
@@ -60,7 +63,16 @@ final class VoiceCommandService: ObservableObject {
             try? handle.close()
         } else {
             FileManager.default.createFile(atPath: debugLogPath, contents: json + Data("\n".utf8))
+            postDebug(json)
         }
+    }
+    
+    private func postDebug(_ json: Data) {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:7242/ingest/116df77c-a424-451d-a9cd-5b90048690e6")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = json
+        URLSession.shared.dataTask(with: request).resume()
     }
     // #endregion
 
@@ -74,6 +86,7 @@ final class VoiceCommandService: ObservableObject {
             )
             return
         }
+        sessionStartTime = Date().timeIntervalSince1970
         shouldStopOnFinal = false
         stopReason = nil
         lastSpeechTime = 0
@@ -171,6 +184,20 @@ final class VoiceCommandService: ObservableObject {
                 "shouldStopOnFinal": shouldStopOnFinal,
             ]
         )
+
+        if autoRestartEnabled, reason != "user_pause" {
+            debugLog(
+                hypothesisId: "L",
+                location: "VoiceCommandService.stopListening",
+                message: "auto_restart_requested",
+                data: ["reason": reason ?? "unknown"]
+            )
+            if let reason, autoRestartReasons.contains(reason) {
+                Task { @MainActor in
+                    self.startListening()
+                }
+            }
+        }
     }
 
     func clearDetectedCommand() {
@@ -259,6 +286,7 @@ final class VoiceCommandService: ObservableObject {
                             message: "inactivity_timeout",
                             data: [
                                 "seconds": now - self.lastSpeechTime,
+                                "uptime": now - self.sessionStartTime,
                                 "hasTranscript": !self.lastNonEmptyTranscript.isEmpty,
                             ]
                         )
@@ -323,7 +351,10 @@ final class VoiceCommandService: ObservableObject {
                             hypothesisId: "D",
                             location: "VoiceCommandService.recognitionTask",
                             message: "recognition_error",
-                            data: ["error": error.localizedDescription]
+                            data: [
+                                "error": error.localizedDescription,
+                                "uptime": Date().timeIntervalSince1970 - self.sessionStartTime,
+                            ]
                         )
                         self.errorMessage = error.localizedDescription
                         self.logger.error("Voice error: \(error.localizedDescription, privacy: .public)")
