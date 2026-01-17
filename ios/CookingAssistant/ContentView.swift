@@ -286,7 +286,8 @@ struct CookingModeView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 VoiceControlBar(
-                    isListening: voiceService.isListening,
+                    isListening: voiceService.isListening || voiceService.isRestarting,
+                    isUserPaused: voiceService.isUserPaused,
                     transcript: voiceService.transcript,
                     errorMessage: voiceService.errorMessage,
                     answerText: answerText,
@@ -303,10 +304,15 @@ struct CookingModeView: View {
         .onAppear {
             voiceService.startListening()
             answerSpeaker.onSpeakStart = { [weak voiceService] in
-                voiceService?.stopListening(force: true, reason: "tts")
+                voiceService?.setTtsActive(true)
             }
             answerSpeaker.onSpeakFinish = { [weak voiceService] in
-                voiceService?.startListening()
+                guard let voiceService else { return }
+                voiceService.setTtsActive(false)
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    voiceService.startListening()
+                }
             }
         }
         .onDisappear {
@@ -380,6 +386,15 @@ struct CookingModeView: View {
     }
 
     private func handleVoiceCommand(_ command: VoiceCommand) {
+        debugLog(
+            hypothesisId: "Q",
+            location: "CookingModeView.handleVoiceCommand",
+            message: "command_received",
+            data: [
+                "command": String(describing: command),
+                "stepIndex": currentStepIndex,
+            ]
+        )
         switch command {
         case .next:
             moveToNextStep()
@@ -395,6 +410,15 @@ struct CookingModeView: View {
     }
 
     private func handleVoiceQuery(_ query: String) async {
+        debugLog(
+            hypothesisId: "Q",
+            location: "CookingModeView.handleVoiceQuery",
+            message: "query_received",
+            data: [
+                "length": query.count,
+                "stepIndex": currentStepIndex,
+            ]
+        )
         answerText = nil
         answerError = nil
         isAnswering = true
@@ -410,6 +434,36 @@ struct CookingModeView: View {
         }
         isAnswering = false
     }
+
+    // #region agent log
+    private func debugLog(
+        hypothesisId: String,
+        location: String,
+        message: String,
+        data: [String: Any]
+    ) {
+        let payload: [String: Any] = [
+            "sessionId": "debug-session",
+            "runId": "run1",
+            "hypothesisId": hypothesisId,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": Date().timeIntervalSince1970 * 1000,
+        ]
+
+        guard let json = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
+            return
+        }
+
+        if let handle = FileHandle(forWritingAtPath: "/Users/mareal/cooking-assistant-ios/.cursor/debug.log") {
+            handle.seekToEndOfFile()
+            handle.write(json)
+            handle.write(Data("\n".utf8))
+            try? handle.close()
+        }
+    }
+    // #endregion
 }
 
 struct StepCard: View {
@@ -495,6 +549,7 @@ struct IngredientImageView: View {
 
 struct VoiceControlBar: View {
     let isListening: Bool
+    let isUserPaused: Bool
     let transcript: String
     let errorMessage: String?
     let answerText: String?
@@ -509,9 +564,19 @@ struct VoiceControlBar: View {
                     .font(.footnote)
                     .foregroundStyle(.red)
             } else {
-                Text(isListening ? "Listening for voice commands..." : "Voice paused")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                if isUserPaused {
+                    Text("Voice paused")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else if isListening {
+                    Text("Listening for voice commands...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Reconnecting...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if !transcript.isEmpty {
@@ -540,18 +605,34 @@ struct VoiceControlBar: View {
                     .lineLimit(2)
             }
 
-            Button(action: onToggleListening) {
-                HStack(spacing: 12) {
-                    Image(systemName: isListening ? "waveform.circle.fill" : "mic.slash.fill")
-                        .font(.title2)
-                    Text(isListening ? "Pause Listening" : "Resume Listening")
-                        .font(.headline)
+            if isUserPaused {
+                Button(action: onToggleListening) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "mic.slash.fill")
+                            .font(.title2)
+                        Text("Resume Listening")
+                            .font(.headline)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.accentColor)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(isListening ? Color.orange : Color.accentColor)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            } else if isListening {
+                Button(action: onToggleListening) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "waveform.circle.fill")
+                            .font(.title2)
+                        Text("Pause Listening")
+                            .font(.headline)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(Color.orange)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
             }
         }
         .padding(16)

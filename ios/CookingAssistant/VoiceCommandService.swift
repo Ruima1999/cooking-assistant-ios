@@ -15,24 +15,34 @@ final class VoiceCommandService: ObservableObject {
     @Published var detectedCommand: VoiceCommand?
     @Published var detectedQuery: String?
     @Published var errorMessage: String?
+    @Published var isRestarting = false
+    @Published var isUserPaused = false
 
     private let audioEngine = AVAudioEngine()
     private let speechRecognizer = SFSpeechRecognizer()
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var lastCommand: VoiceCommand?
+    private var lastCommandDetectedAt: TimeInterval = 0
+    private var suppressCommands = false
+    private var sessionId: Int = 0
+    private var ttsActive = false
     private let logger = Logger(subsystem: "com.example.CookingAssistant", category: "voice")
     private var audioBufferCount = 0
     private var lastAudioLogTime: TimeInterval = 0
     private var lastResultLogTime: TimeInterval = 0
     private var lastSpeechTime: TimeInterval = 0
     private var lastNonEmptyTranscript = ""
+    private var lastPartialTranscript = ""
+    private var lastCommandTime: TimeInterval = 0
+    private var lastNonCommandTime: TimeInterval = 0
     private let inactivityTimeout: TimeInterval = 5
+    private let commandDebounce: TimeInterval = 0.75
     private var shouldStopOnFinal = false
     private var stopReason: String?
     private let autoRestartEnabled = true
     private var sessionStartTime: TimeInterval = 0
-    private let autoRestartReasons: Set<String> = ["inactivity_timeout", "final"]
+    private let autoRestartReasons: Set<String> = ["inactivity_timeout", "final", "recognition_error"]
     // #region agent log
     private let debugLogPath = "/Users/mareal/cooking-assistant-ios/.cursor/debug.log"
 
@@ -77,6 +87,15 @@ final class VoiceCommandService: ObservableObject {
     // #endregion
 
     func startListening() {
+        if ttsActive {
+            debugLog(
+                hypothesisId: "K",
+                location: "VoiceCommandService.startListening",
+                message: "start_ignored_tts_active",
+                data: [:]
+            )
+            return
+        }
         if isListening {
             debugLog(
                 hypothesisId: "K",
@@ -87,10 +106,16 @@ final class VoiceCommandService: ObservableObject {
             return
         }
         sessionStartTime = Date().timeIntervalSince1970
+        sessionId += 1
         shouldStopOnFinal = false
         stopReason = nil
         lastSpeechTime = 0
         lastNonEmptyTranscript = ""
+        lastNonCommandTime = 0
+        lastCommand = nil
+        lastCommandDetectedAt = 0
+        suppressCommands = false
+        isUserPaused = false
         debugLog(
             hypothesisId: "K",
             location: "VoiceCommandService.startListening",
@@ -148,6 +173,14 @@ final class VoiceCommandService: ObservableObject {
 
     func stopListening(force: Bool = true, reason: String? = nil) {
         stopReason = reason
+        if reason == "user_pause" {
+            isUserPaused = true
+        } else {
+            isUserPaused = false
+        }
+        if reason == "inactivity_timeout" {
+            suppressCommands = true
+        }
         if force {
             recognitionTask?.cancel()
             recognitionTask = nil
@@ -194,6 +227,19 @@ final class VoiceCommandService: ObservableObject {
             )
             if let reason, autoRestartReasons.contains(reason) {
                 Task { @MainActor in
+                    if self.ttsActive || reason == "tts" {
+                        self.debugLog(
+                            hypothesisId: "L",
+                            location: "VoiceCommandService.stopListening",
+                            message: "auto_restart_suppressed_tts",
+                            data: ["reason": reason]
+                        )
+                        return
+                    }
+                    self.isRestarting = true
+                    if reason == "recognition_error" {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                    }
                     self.startListening()
                 }
             }
@@ -206,6 +252,13 @@ final class VoiceCommandService: ObservableObject {
 
     func clearDetectedQuery() {
         detectedQuery = nil
+    }
+
+    func setTtsActive(_ active: Bool) {
+        ttsActive = active
+        if active {
+            stopListening(force: true, reason: "tts")
+        }
     }
 
     private func beginSession() {
@@ -280,6 +333,7 @@ final class VoiceCommandService: ObservableObject {
 
                 if lastSpeechTime > 0, now - lastSpeechTime >= inactivityTimeout {
                     Task { @MainActor in
+                        let shouldSendQuery = self.lastNonCommandTime > self.lastCommandTime
                         self.debugLog(
                             hypothesisId: "H",
                             location: "VoiceCommandService.audioTap",
@@ -288,12 +342,27 @@ final class VoiceCommandService: ObservableObject {
                                 "seconds": now - self.lastSpeechTime,
                                 "uptime": now - self.sessionStartTime,
                                 "hasTranscript": !self.lastNonEmptyTranscript.isEmpty,
+                                "lastCommandAge": self.lastCommandTime == 0 ? -1 : (now - self.lastCommandTime),
+                                "lastNonCommandAge": self.lastNonCommandTime == 0 ? -1 : (now - self.lastNonCommandTime),
+                                "shouldSendQuery": shouldSendQuery,
                             ]
                         )
-                        if !self.lastNonEmptyTranscript.isEmpty {
-                            self.detectedQuery = self.lastNonEmptyTranscript
+                        if shouldSendQuery {
+                            let fallback = self.lastNonEmptyTranscript.isEmpty
+                                ? self.lastPartialTranscript
+                                : self.lastNonEmptyTranscript
+                            self.lastNonEmptyTranscript = ""
+                            self.lastPartialTranscript = ""
+                            self.handleTranscript(fallback, isFinal: true)
                         }
+                        self.isRestarting = true
                         self.stopListening(force: false, reason: "inactivity_timeout")
+                        self.debugLog(
+                            hypothesisId: "H",
+                            location: "VoiceCommandService.audioTap",
+                            message: "restart_after_timeout",
+                            data: ["sentTranscript": shouldSendQuery && !self.lastNonEmptyTranscript.isEmpty]
+                        )
                     }
                 }
             }
@@ -301,6 +370,7 @@ final class VoiceCommandService: ObservableObject {
             audioEngine.prepare()
             try audioEngine.start()
             isListening = true
+            isRestarting = false
             logger.info("Voice listening started")
             debugLog(
                 hypothesisId: "F",
@@ -309,17 +379,49 @@ final class VoiceCommandService: ObservableObject {
                 data: ["isRunning": audioEngine.isRunning]
             )
 
+            let activeSessionId = self.sessionId
             recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
                 Task { @MainActor in
                     guard let self else { return }
+                    guard activeSessionId == self.sessionId else {
+                        self.debugLog(
+                            hypothesisId: "D",
+                            location: "VoiceCommandService.recognitionTask",
+                            message: "stale_session_result",
+                            data: ["sessionId": activeSessionId, "current": self.sessionId]
+                        )
+                        return
+                    }
 
                     if let result {
+                        if self.ttsActive {
+                            self.debugLog(
+                                hypothesisId: "D",
+                                location: "VoiceCommandService.recognitionTask",
+                                message: "result_suppressed_tts",
+                                data: ["isFinal": result.isFinal]
+                            )
+                            return
+                        }
                         let phrase = result.bestTranscription.formattedString
                         self.transcript = phrase
                         let now = Date().timeIntervalSince1970
                         if !phrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            self.lastPartialTranscript = phrase
+                            if Self.containsCommandKeyword(phrase) {
+                                self.lastCommandTime = now
+                                self.debugLog(
+                                    hypothesisId: "S",
+                                    location: "VoiceCommandService.recognitionTask",
+                                    message: "command_like_transcript",
+                                    data: ["length": phrase.count]
+                                )
+                            } else {
+                                self.lastNonCommandTime = now
+                                self.lastSpeechTime = now
+                                self.lastNonEmptyTranscript = phrase
+                            }
                             self.lastSpeechTime = now
-                            self.lastNonEmptyTranscript = phrase
                         }
                         if now - self.lastResultLogTime > 0.5 {
                             self.lastResultLogTime = now
@@ -347,6 +449,15 @@ final class VoiceCommandService: ObservableObject {
                     }
 
                     if let error {
+                        if self.ttsActive || self.stopReason == "tts" {
+                            self.debugLog(
+                                hypothesisId: "D",
+                                location: "VoiceCommandService.recognitionTask",
+                                message: "error_suppressed_tts",
+                                data: ["error": error.localizedDescription]
+                            )
+                            return
+                        }
                         self.debugLog(
                             hypothesisId: "D",
                             location: "VoiceCommandService.recognitionTask",
@@ -396,10 +507,34 @@ final class VoiceCommandService: ObservableObject {
     }
 
     private func handleTranscript(_ transcript: String, isFinal: Bool) {
+        if suppressCommands {
+            debugLog(
+                hypothesisId: "Q",
+                location: "VoiceCommandService.handleTranscript",
+                message: "suppressed_after_stop",
+                data: ["isFinal": isFinal, "length": transcript.count]
+            )
+            if isFinal {
+                lastCommand = nil
+            }
+            return
+        }
         let lowercased = transcript.lowercased()
         let command: VoiceCommand?
         let isQuestion = isQuestionLike(lowercased)
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        debugLog(
+            hypothesisId: "Q",
+            location: "VoiceCommandService.handleTranscript",
+            message: "transcript_received",
+            data: [
+                "isFinal": isFinal,
+                "length": transcript.count,
+                "containsNext": lowercased.contains("next"),
+                "containsPrev": lowercased.contains("previous") || lowercased.contains("back"),
+                "containsRepeat": lowercased.contains("repeat"),
+            ]
+        )
 
         if lowercased.contains("next") {
             command = .next
@@ -411,10 +546,49 @@ final class VoiceCommandService: ObservableObject {
             command = nil
         }
 
-        if let command, command != lastCommand {
+        if let command {
+            let now = Date().timeIntervalSince1970
+            let isRepeat = command == lastCommand
+            let withinDebounce = now - lastCommandDetectedAt < commandDebounce
+            if isRepeat && withinDebounce {
+                debugLog(
+                    hypothesisId: "Q",
+                    location: "VoiceCommandService.handleTranscript",
+                    message: "command_suppressed_debounce",
+                    data: [
+                        "command": String(describing: command),
+                        "delta": now - lastCommandDetectedAt,
+                    ]
+                )
+            } else {
+            debugLog(
+                hypothesisId: "Q",
+                location: "VoiceCommandService.handleTranscript",
+                message: "command_detected",
+                data: [
+                    "command": String(describing: command),
+                    "isFinal": isFinal,
+                    "length": transcript.count,
+                ]
+            )
+            lastCommandTime = now
+            lastCommandDetectedAt = now
+            lastNonEmptyTranscript = ""
+            lastPartialTranscript = ""
+            lastNonCommandTime = 0
             detectedCommand = command
             lastCommand = command
             logger.info("Detected voice command: \(String(describing: command), privacy: .public)")
+            debugLog(
+                hypothesisId: "R",
+                location: "VoiceCommandService.handleTranscript",
+                message: "command_applied",
+                data: [
+                    "command": String(describing: command),
+                    "clearedTranscript": true,
+                ]
+            )
+            }
         }
 
         if isFinal {
@@ -447,7 +621,7 @@ final class VoiceCommandService: ObservableObject {
                     hypothesisId: "B",
                     location: "VoiceCommandService.handleTranscript",
                     message: "detected_query_no_command",
-                    data: ["length": transcript.count]
+                    data: ["length": transcript.count, "isQuestion": isQuestion]
                 )
                 detectedQuery = transcript
                 logger.info("Detected voice query for command = nil: \(transcript, privacy: .private(mask: .hash))")
@@ -456,7 +630,7 @@ final class VoiceCommandService: ObservableObject {
                     hypothesisId: "B",
                     location: "VoiceCommandService.handleTranscript",
                     message: "detected_query_question",
-                    data: ["length": transcript.count]
+                    data: ["length": transcript.count, "isQuestion": isQuestion]
                 )
                 detectedQuery = transcript
                 logger.info("Detected voice query (question) for isQuestion = true: \(transcript, privacy: .private(mask: .hash))")
@@ -466,6 +640,18 @@ final class VoiceCommandService: ObservableObject {
         if isFinal {
             lastCommand = nil
         }
+    }
+
+    func processLastPartialAfterTimeout() {
+        let trimmed = lastPartialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        debugLog(
+            hypothesisId: "T",
+            location: "VoiceCommandService.processLastPartialAfterTimeout",
+            message: "process_partial",
+            data: ["length": trimmed.count]
+        )
+        guard !trimmed.isEmpty else { return }
+        handleTranscript(trimmed, isFinal: true)
     }
 
     private func isQuestionLike(_ transcript: String) -> Bool {
@@ -498,5 +684,13 @@ final class VoiceCommandService: ObservableObject {
         ]
 
         return containsCues.contains { trimmed.contains($0) }
+    }
+
+    private static func containsCommandKeyword(_ transcript: String) -> Bool {
+        let lowercased = transcript.lowercased()
+        return lowercased.contains("next")
+            || lowercased.contains("previous")
+            || lowercased.contains("back")
+            || lowercased.contains("repeat")
     }
 }
